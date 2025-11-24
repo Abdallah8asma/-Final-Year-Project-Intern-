@@ -1,0 +1,192 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_IMAGE_NAME_FRONT = '54.213.45.120:8083/front:latest'
+        DOCKER_IMAGE_NAME_DATA = '54.213.45.120:8083/data:latest'
+        DOCKER_IMAGE_NAME_BACK_COMMUN = '54.213.45.120:8083/mt-gpro-commun-rest:latest'
+        DOCKER_IMAGE_NAME_BACK_LOGISTIQUE = '54.213.45.120:8083/ma-gpro-logistique-rest:latest'
+    }
+
+    stages {
+
+        stage('Clone') {
+            steps {
+                git branch: 'master', credentialsId: 'Github', url: 'git@github.com:Abdallah8asma/-Final-Year-Project-Intern-.git'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def projects = [
+                        [path: 'socle', projectKey: 'socle'],
+                        [path: 'socle-j2ee', projectKey: 'socle-j2ee'],
+                        [path: 'socle-j2ee-tiers', projectKey: 'socle-j2ee-tiers'],
+                        [path: 'scole-j2ee-mt', projectKey: 'scole-j2ee-mt'],
+                        [path: 'mt-socle', projectKey: 'mt-socle'],
+                        [path: 'mt-commun', projectKey: 'mt-commun'],
+                        [path: 'mt-gpro-commun', projectKey: 'mt-gpro-commun'],
+                        [path: 'ma-gpro-logistique', projectKey: 'ma-gpro-logistique'],
+                        [path: 'ma-gpro-design-war', projectKey: 'ma-gpro-design-war'],
+                        [path: 'ma-gpro-atelier-war', projectKey: 'ma-gpro-atelier-war']
+                    ]
+
+                    withSonarQubeEnv('SonarQube') {
+                        for (proj in projects) {
+                            dir("/var/lib/jenkins/workspace/projet_pfe/${proj.path}") {
+                                sh "mvn clean verify sonar:sonar -Dsonar.projectKey=${proj.projectKey} -Dsonar.host.url=http://44.204.89.90:9000 -Dsonar.login=admin -Dsonar.password=sonar"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Maven Projects') {
+            steps {
+                script {
+                    def mavenProjects = [
+                        'socle',
+                        'socle-j2ee',
+                        'socle-j2ee-tiers',
+                        'scole-j2ee-mt',
+                        'mt-socle',
+                        'mt-commun',
+                        'mt-gpro-commun',
+                        'ma-gpro-logistique',
+                        'ma-gpro-design-war',
+                        'ma-gpro-atelier-war'
+                    ]
+                    for (proj in mavenProjects) {
+                        dir("/var/lib/jenkins/workspace/projet_pfe/${proj}") {
+                            sh 'mvn clean install'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Stock WAR/JAR Files to Nexus') {
+            steps {
+                script {
+                    def version = "${env.BUILD_NUMBER}"
+                    def projects = [
+                        [artifactId: 'mt-socle', groupId: 'com.gpro.consulting.socle.j2ee.mt', path: '/var/lib/jenkins/workspace/projet_pfe/mt-socle/target/mt-socle-3.5.0.0-SNAPSHOT.jar', type: 'jar'],
+                        [artifactId: 'mt-commun', groupId: 'com.gpro.consulting.socle.j2ee.mt', path: '/var/lib/jenkins/workspace/projet_pfe/mt-commun/target/mt-commun-3.5.0.0-SNAPSHOT.jar', type: 'jar'],
+                        [artifactId: 'mt-gpro-commun-rest', groupId: 'com.gpro.consulting.tiers.commun.rest', path: '/var/lib/jenkins/workspace/projet_pfe/mt-gpro-commun/mt-gpro-commun-rest/target/mt-gpro-commun-rest-3.5.0.0-SNAPSHOT.war', type: 'war'],
+                        [artifactId: 'mt-gpro-logistique-rest', groupId: 'com.gpro.consulting.tiers.logistique.rest', path: '/var/lib/jenkins/workspace/projet_pfe/ma-gpro-logistique/ma-gpro-logistique-rest/target/ma-gpro-logistique-rest-3.5.0.0-SNAPSHOT.war', type: 'war'],
+                        [artifactId: 'ma-gpro-design', groupId: 'com.gpro.consulting.tiers.presentation', path: '/var/lib/jenkins/workspace/projet_pfe/ma-gpro-design-war/presentation/target/ma-gpro-design-3.5.0.0-SNAPSHOT.war', type: 'war']
+                    ]
+
+                    for (proj in projects) {
+                        nexusArtifactUploader(
+                            artifacts: [
+                                [
+                                    artifactId: proj.artifactId,
+                                    classifier: '',
+                                    file: proj.path,
+                                    type: proj.type
+                                ]
+                            ],
+                            credentialsId: 'nexus',
+                            groupId: proj.groupId,
+                            nexusUrl: '54.165.147.81:8081',
+                            nexusVersion: 'nexus3',
+                            protocol: 'http',
+                            repository: 'devops', 
+                            version: version
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Clean Docker') {
+            steps {
+                sh '''
+                    docker rmi $DOCKER_IMAGE_NAME_FRONT || true
+                    docker rmi $DOCKER_IMAGE_NAME_DATA || true
+                    docker rmi $DOCKER_IMAGE_NAME_BACK_COMMUN || true
+                    docker rmi $DOCKER_IMAGE_NAME_BACK_LOGISTIQUE || true
+                '''
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh 'docker build -t $DOCKER_IMAGE_NAME_FRONT -f dockerfile-front .'
+                sh 'docker build -t $DOCKER_IMAGE_NAME_DATA -f dockerfile-data .'
+                sh 'docker build -t $DOCKER_IMAGE_NAME_BACK_LOGISTIQUE -f dockerfile-logistique .'
+                sh 'docker build -t $DOCKER_IMAGE_NAME_BACK_COMMUN -f dockerfile-commun .'
+            }
+        }
+
+        stage('Push Docker Images to Nexus') {
+            steps {
+                withDockerRegistry([credentialsId: "Nexus", url: "http://54.213.45.120:8083/"]) {
+                    sh 'docker push $DOCKER_IMAGE_NAME_FRONT'
+                    sh 'docker push $DOCKER_IMAGE_NAME_BACK_LOGISTIQUE'
+                    sh 'docker push $DOCKER_IMAGE_NAME_BACK_COMMUN'
+                    sh 'docker push $DOCKER_IMAGE_NAME_DATA'
+                }
+            }
+        }
+
+        stage('Scan Docker Images with Trivy') {
+            steps {
+                sh '''
+                    trivy image --scanners vuln --severity CRITICAL,HIGH --format table $DOCKER_IMAGE_NAME_FRONT
+                    trivy image --scanners vuln --severity CRITICAL,HIGH --format table $DOCKER_IMAGE_NAME_BACK_COMMUN
+                    trivy image --scanners vuln --severity CRITICAL,HIGH --format table $DOCKER_IMAGE_NAME_BACK_LOGISTIQUE
+                    trivy image --scanners vuln --severity CRITICAL,HIGH --format table $DOCKER_IMAGE_NAME_DATA
+                '''
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withKubeConfig(credentialsId: 'k8s', serverUrl: 'https://54.213.45.120:6443') {
+                    sh 'kubectl apply --validate=false -f postgres-pv-pvc.yaml'
+                    sh 'kubectl apply --validate=false -f frontend-deployment.yaml'
+                    sh 'kubectl apply --validate=false -f logistique-deployment.yaml'
+                    sh 'kubectl apply --validate=false -f commun-deployment.yaml'
+                    sh 'kubectl apply --validate=false -f deployservice-postgres.yaml'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(channel: '#devops', message: "✅ Pipeline Succeeded\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\n${env.BUILD_URL}")
+            mail to: 'ab.abdallahasma@gmail.com',
+                 subject: "✅ Build Success - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """\
+Bonjour,
+
+Le build a été déclenché par : ${currentBuild.getBuildCauses()[0].shortDescription}
+Numéro du build : #${env.BUILD_NUMBER}
+Statut du build : SUCCESS ✅
+
+Lien pour tester l'application :
+http://54.213.45.120:30080
+"""
+        }
+
+        failure {
+            slackSend(channel: '#devops', message: "❌ Pipeline Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\n${env.BUILD_URL}")
+            mail to: 'ab.abdallahasma@gmail.com',
+                 subject: "❌ Build Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """\
+Bonjour,
+
+Le build a été déclenché par : ${currentBuild.getBuildCauses()[0].shortDescription}
+Numéro du build : #${env.BUILD_NUMBER}
+Statut du build : FAILED ❌
+
+Lien pour tester l'application (peut ne pas être dispo) :
+http://54.213.45.120:30080
+"""
+        }
+    }
+}
